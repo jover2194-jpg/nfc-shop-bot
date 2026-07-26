@@ -1,19 +1,17 @@
 """
-NFC Cards Telegram Shop Bot
-----------------------------
-A menu-driven storefront bot: Browse Products, Cart, Orders, Support Tickets,
-Reviews, News Feed, Help, Website + Community links.
+TapForge NFC Cards Telegram Shop Bot
+------------------------------------
+Menu-driven storefront: Browse Products (with images + descriptions),
+Cart-ready structure, Orders, Support Tickets, Reviews, News, Help,
+Website + Community links.
 
 Setup:
   1. pip install -r requirements.txt
-  2. Set environment variables: BOT_TOKEN, ADMIN_CHAT_ID (your own Telegram
-     user ID, so order/support notifications reach you), and optionally
-     PROVIDER_TOKEN (Stripe payment provider token from BotFather, for real
-     checkout via Telegram Payments).
+  2. Environment variables: BOT_TOKEN, ADMIN_CHAT_ID, (optional) PROVIDER_TOKEN,
+     WEBSITE_URL, COMMUNITY_URL
   3. Run: python bot.py
 
-Data is stored in a local SQLite file (shop.db) - orders, leads, and support
-tickets all live there so nothing is lost between restarts.
+Data stored in /data/shop.db (Railway Volume)
 """
 
 import logging
@@ -26,6 +24,7 @@ from telegram import (
     InlineKeyboardMarkup,
     LabeledPrice,
     Update,
+    InputMediaPhoto,
 )
 from telegram.ext import (
     Application,
@@ -45,22 +44,63 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-PROVIDER_TOKEN = os.environ.get("PROVIDER_TOKEN", "")  # Stripe, via BotFather
-ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")  # your Telegram user ID
+PROVIDER_TOKEN = os.environ.get("PROVIDER_TOKEN", "")
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://example.com")
 COMMUNITY_URL = os.environ.get("COMMUNITY_URL", "https://t.me/example")
 
-# Product catalog - card type -> label
+# Product catalog
 PRODUCTS = {
-    "google": "Google Card",
-    "trustpilot": "Trustpilot Card",
-    "tripadvisor": "Tripadvisor Card",
-    "whatsapp": "WhatsApp Growth Card",
-    "telegram": "Telegram Growth Card",
-    "social": "Social Media Card (IG/TikTok/FB)",
+    "google": {
+        "name": "Google Review Card",
+        "desc": (
+            "More 5-star Google reviews = more customers finding you.\n"
+            "One tap sends people straight to leave a review. No typing, no friction."
+        ),
+        "emoji": "🔵",
+    },
+    "trustpilot": {
+        "name": "Trustpilot Card",
+        "desc": (
+            "Build real trust online.\n"
+            "Customers tap once and land on your Trustpilot page ready to review."
+        ),
+        "emoji": "🟢",
+    },
+    "tripadvisor": {
+        "name": "Tripadvisor Card",
+        "desc": (
+            "Perfect for restaurants, hotels & experiences.\n"
+            "One tap → instant Tripadvisor review. More reviews = higher rankings."
+        ),
+        "emoji": "🦉",
+    },
+    "whatsapp": {
+        "name": "WhatsApp Growth Card",
+        "desc": (
+            "Turn every customer into a WhatsApp contact.\n"
+            "They tap the card and open a chat with you instantly — perfect for bookings, support or offers."
+        ),
+        "emoji": "💬",
+    },
+    "telegram": {
+        "name": "Telegram Growth Card",
+        "desc": (
+            "Grow your Telegram channel or group fast.\n"
+            "One tap and they join. Ideal for communities, updates and exclusive deals."
+        ),
+        "emoji": "✈️",
+    },
+    "social": {
+        "name": "Social Media Card",
+        "desc": (
+            "One card for Instagram, TikTok & Facebook.\n"
+            "Customers tap and choose which platform to follow you on. Maximum reach, zero effort."
+        ),
+        "emoji": "📱",
+    },
 }
 
-# Bundle pricing in pence (GBP) - same tiers applied to every card type
 BUNDLE_PRICES_PENCE = {
     1: 1795,
     5: 5295,
@@ -76,7 +116,6 @@ def format_gbp(pence: int) -> str:
     return f"£{pence / 100:,.2f}"
 
 
-# --- Conversation states for the order form ---
 (
     ASK_BUNDLE,
     ASK_BUSINESS_NAME,
@@ -89,7 +128,7 @@ def format_gbp(pence: int) -> str:
 
 
 def db():
-    conn = sqlite3.connect("shop.db")
+    conn = sqlite3.connect("/data/shop.db")
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -140,35 +179,6 @@ def init_db():
     conn.close()
 
 
-async def leads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin-only command: /leads shows full details for every lead saved."""
-    if not ADMIN_CHAT_ID or str(update.effective_user.id) != str(ADMIN_CHAT_ID):
-        await update.message.reply_text("This command is only available to the shop admin.")
-        return
-
-    conn = db()
-    rows = conn.execute("SELECT * FROM leads ORDER BY id DESC LIMIT 20").fetchall()
-    conn.close()
-
-    if not rows:
-        await update.message.reply_text("No leads saved yet.")
-        return
-
-    for r in rows:
-        text = (
-            f"*Lead #{r['id']}* — {r['status']}\n"
-            f"Business: {r['business_name']}\n"
-            f"Contact: {r['contact_name']}\n"
-            f"Phone: {r['phone']}\n"
-            f"Email: {r['email']}\n"
-            f"Locations: {r['locations']}\n"
-            f"Product: {r['product']} x{r['bundle_size']}\n"
-            f"Source: {r['source']}\n"
-            f"Created: {r['created_at']}"
-        )
-        await update.message.reply_text(text, parse_mode="Markdown")
-
-
 def main_menu_keyboard():
     return InlineKeyboardMarkup(
         [
@@ -194,13 +204,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order_count = conn.execute("SELECT COUNT(*) c FROM orders").fetchone()["c"]
     conn.close()
     text = (
-        "✅ *Shop is Online!*\n\n"
+        "✅ *TapForge Shop is Online!*\n\n"
         f"📦 {order_count} Sales\n\n"
-        "Welcome — grab NFC review/growth cards for your business. "
+        "Welcome — grab NFC review & growth cards for your business.\n"
         "Bundles start from £17.95.\n\n"
-        "Tap your card on any phone to send customers straight to leave a "
-        "Google/Trustpilot/Tripadvisor review, or to grow your WhatsApp, "
-        "Telegram, Instagram, TikTok or Facebook."
+        "One tap on any phone → customers leave a review or join your WhatsApp / Telegram / socials."
     )
     await update.message.reply_text(
         text, parse_mode="Markdown", reply_markup=main_menu_keyboard()
@@ -208,25 +216,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Entry point of the order conversation - user picked a card type."""
     query = update.callback_query
     await query.answer()
     product_key = query.data.replace("product_", "")
-    context.user_data["product"] = PRODUCTS[product_key]
+    product = PRODUCTS[product_key]
+    context.user_data["product"] = product["name"]
+    context.user_data["product_key"] = product_key
+
+    text = (
+        f"{product['emoji']} *{product['name']}*\n\n"
+        f"{product['desc']}\n\n"
+        "Choose a bundle size:"
+    )
 
     buttons = []
     row = []
-    for i, size in enumerate(BUNDLE_ORDER, start=1):
+    for size in BUNDLE_ORDER:
         price = format_gbp(BUNDLE_PRICES_PENCE[size])
-        row.append(InlineKeyboardButton(f"{size} — {price}", callback_data=f"bundle_{size}"))
+        row.append(
+            InlineKeyboardButton(f"{size} — {price}", callback_data=f"bundle_{size}")
+        )
         if len(row) == 2:
             buttons.append(row)
             row = []
     if row:
         buttons.append(row)
 
+    buttons.append([InlineKeyboardButton("⬅️ Back to Products", callback_data="browse")])
+
     await query.edit_message_text(
-        f"*{context.user_data['product']}*\n\nChoose a bundle size:",
+        text,
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(buttons),
     )
@@ -243,24 +262,23 @@ async def select_bundle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"*{context.user_data['product']}* — {size} card(s) — "
         f"{format_gbp(BUNDLE_PRICES_PENCE[size])}\n\n"
-        "Let's get your details. What's your business name?",
+        "Let's get your details.\n\nWhat's your business name?",
         parse_mode="Markdown",
     )
     return ASK_BUSINESS_NAME
 
 
 async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles all the non-order-flow menu buttons."""
     query = update.callback_query
     await query.answer()
     data = query.data
 
     if data == "browse":
         buttons = [
-            [InlineKeyboardButton(label, callback_data=f"product_{key}")]
-            for key, label in PRODUCTS.items()
+            [InlineKeyboardButton(f"{p['emoji']} {p['name']}", callback_data=f"product_{key}")]
+            for key, p in PRODUCTS.items()
         ]
-        buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="back_main")])
+        buttons.append([InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="back_main")])
         await query.edit_message_text(
             "Choose a card type:",
             reply_markup=InlineKeyboardMarkup(buttons),
@@ -274,7 +292,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ).fetchall()
         conn.close()
         if not rows:
-            text = "You don't have any orders yet. Tap Browse Products to get started."
+            text = "You don't have any orders yet.\nTap *Browse Products* to get started."
         else:
             text = "*Your Orders:*\n\n" + "\n".join(
                 f"#{r['id']} — {r['product']} x{r['bundle_size']} — {r['status']}"
@@ -293,7 +311,7 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "support":
         await query.edit_message_text(
-            "Describe your issue and I'll pass it straight to the team."
+            "Describe your issue and I'll pass it straight to the TapForge team."
         )
         context.user_data["awaiting_support"] = True
 
@@ -328,7 +346,6 @@ async def button_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles free-text replies for track-order and support-ticket flows."""
     if context.user_data.get("awaiting_track"):
         context.user_data["awaiting_track"] = False
         order_id = update.message.text.strip().lstrip("#")
@@ -369,8 +386,6 @@ async def text_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
-
-# --- Order form conversation (business details) ---
 
 async def ask_business_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["business_name"] = update.message.text
@@ -437,7 +452,6 @@ async def ask_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     amount_pence = ud["amount_pence"]
 
     if not PROVIDER_TOKEN:
-        # No payment provider configured yet - confirm the order manually instead
         conn = db()
         conn.execute(
             """INSERT INTO orders (lead_id, telegram_user_id, product, bundle_size, shipping_address, amount_pence, status, created_at)
@@ -457,8 +471,8 @@ async def ask_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         await update.message.reply_text(
             f"Thanks! Your order for {ud['bundle_size']} x {ud['product']} "
-            f"({format_gbp(amount_pence)}) is saved. Online card payment isn't set up yet "
-            "on this bot — the team will follow up to take payment.",
+            f"({format_gbp(amount_pence)}) is saved.\n\n"
+            "Online card payment isn't set up yet — the team will follow up to take payment.",
             reply_markup=main_menu_keyboard(),
         )
         return ConversationHandler.END
@@ -509,10 +523,38 @@ async def successful_payment_callback(update: Update, context: ContextTypes.DEFA
     conn.commit()
     conn.close()
     await update.message.reply_text(
-        "🎉 Payment received! Your cards will be printed and shipped shortly. "
+        "🎉 Payment received! Your cards will be printed and shipped shortly.\n"
         "Use Track Order any time to check status.",
         reply_markup=main_menu_keyboard(),
     )
+
+
+async def leads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only: show latest 20 leads."""
+    if not ADMIN_CHAT_ID or str(update.effective_user.id) != str(ADMIN_CHAT_ID):
+        await update.message.reply_text("This command is for admins only.")
+        return
+
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM leads ORDER BY id DESC LIMIT 20"
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text("No leads yet.")
+        return
+
+    text = "*Latest 20 Leads:*\n\n"
+    for r in rows:
+        text += (
+            f"#{r['id']} — {r['business_name']}\n"
+            f"{r['product']} x{r['bundle_size']}\n"
+            f"{r['contact_name']} | {r['phone']} | {r['email']}\n"
+            f"Locations: {r['locations']}\n"
+            f"{r['created_at'][:10]}\n\n"
+        )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 def main():
@@ -526,12 +568,12 @@ def main():
         entry_points=[CallbackQueryHandler(select_product, pattern="^product_")],
         states={
             ASK_BUNDLE: [CallbackQueryHandler(select_bundle, pattern="^bundle_")],
-            ASK_BUSINESS_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_business_name)],
-            ASK_CONTACT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_contact_name)],
-            ASK_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
-            ASK_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_email)],
-            ASK_LOCATIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_locations)],
-            ASK_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_address)],
+            ASK_BUSINESS_NAME: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_business_name)],
+            ASK_CONTACT_NAME: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_contact_name)],
+            ASK_PHONE: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_phone)],
+            ASK_EMAIL: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_email)],
+            ASK_LOCATIONS: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_locations)],
+            ASK_ADDRESS: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_address)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
@@ -542,9 +584,9 @@ def main():
     app.add_handler(CallbackQueryHandler(button_router))
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
+    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, text_router))
 
-    logger.info("Bot starting...")
+    logger.info("TapForge bot starting...")
     app.run_polling()
 
 
