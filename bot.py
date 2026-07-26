@@ -1,8 +1,8 @@
-"""
+ """
 TapForge NFC Cards Telegram Shop Bot
 ------------------------------------
-Menu-driven storefront: Browse Products (with images + descriptions),
-Cart-ready structure, Orders, Support Tickets, Reviews, News, Help,
+Menu-driven storefront: Browse Products (with descriptions),
+Orders, Support Tickets, Reviews, News, Help,
 Website + Community links.
 
 Setup:
@@ -24,7 +24,6 @@ from telegram import (
     InlineKeyboardMarkup,
     LabeledPrice,
     Update,
-    InputMediaPhoto,
 )
 from telegram.ext import (
     Application,
@@ -429,166 +428,4 @@ async def ask_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update.effective_user.id,
             ud["business_name"],
             ud["contact_name"],
-            ud["phone"],
-            ud["email"],
-            ud["locations"],
-            ud["product"],
-            ud["bundle_size"],
-            datetime.utcnow().isoformat(),
-        ),
-    )
-    lead_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    context.user_data["lead_id"] = lead_id
-
-    if ADMIN_CHAT_ID:
-        await context.bot.send_message(
-            ADMIN_CHAT_ID,
-            f"🟢 New lead #{lead_id}: {ud['business_name']} ({ud['product']} x{ud['bundle_size']}) — "
-            f"{ud['contact_name']}, {ud['phone']}, {ud['email']}",
-        )
-
-    amount_pence = ud["amount_pence"]
-
-    if not PROVIDER_TOKEN:
-        conn = db()
-        conn.execute(
-            """INSERT INTO orders (lead_id, telegram_user_id, product, bundle_size, shipping_address, amount_pence, status, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (
-                lead_id,
-                update.effective_user.id,
-                ud["product"],
-                ud["bundle_size"],
-                ud["address"],
-                amount_pence,
-                "Awaiting payment (manual)",
-                datetime.utcnow().isoformat(),
-            ),
-        )
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(
-            f"Thanks! Your order for {ud['bundle_size']} x {ud['product']} "
-            f"({format_gbp(amount_pence)}) is saved.\n\n"
-            "Online card payment isn't set up yet — the team will follow up to take payment.",
-            reply_markup=main_menu_keyboard(),
-        )
-        return ConversationHandler.END
-
-    await update.message.reply_text(
-        f"Almost done — tap below to pay {format_gbp(amount_pence)}."
-    )
-    await context.bot.send_invoice(
-        chat_id=update.effective_chat.id,
-        title=f"{ud['product']} x{ud['bundle_size']}",
-        description=f"{ud['bundle_size']} card(s) — {ud['product']}",
-        payload=f"lead_{lead_id}",
-        provider_token=PROVIDER_TOKEN,
-        currency="GBP",
-        prices=[LabeledPrice(f"{ud['product']} x{ud['bundle_size']}", amount_pence)],
-    )
-    return ConversationHandler.END
-
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Cancelled.", reply_markup=main_menu_keyboard())
-    return ConversationHandler.END
-
-
-async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.pre_checkout_query.answer(ok=True)
-
-
-async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    payload = update.message.successful_payment.invoice_payload
-    lead_id = payload.replace("lead_", "")
-    conn = db()
-    lead = conn.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
-    conn.execute(
-        """INSERT INTO orders (lead_id, telegram_user_id, product, bundle_size, shipping_address, amount_pence, status, created_at)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (
-            lead_id,
-            update.effective_user.id,
-            lead["product"] if lead else "Unknown",
-            lead["bundle_size"] if lead else 1,
-            context.user_data.get("address", ""),
-            context.user_data.get("amount_pence", 0),
-            "Paid",
-            datetime.utcnow().isoformat(),
-        ),
-    )
-    conn.commit()
-    conn.close()
-    await update.message.reply_text(
-        "🎉 Payment received! Your cards will be printed and shipped shortly.\n"
-        "Use Track Order any time to check status.",
-        reply_markup=main_menu_keyboard(),
-    )
-
-
-async def leads_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin-only: show latest 20 leads."""
-    if not ADMIN_CHAT_ID or str(update.effective_user.id) != str(ADMIN_CHAT_ID):
-        await update.message.reply_text("This command is for admins only.")
-        return
-
-    conn = db()
-    rows = conn.execute(
-        "SELECT * FROM leads ORDER BY id DESC LIMIT 20"
-    ).fetchall()
-    conn.close()
-
-    if not rows:
-        await update.message.reply_text("No leads yet.")
-        return
-
-    text = "*Latest 20 Leads:*\n\n"
-    for r in rows:
-        text += (
-            f"#{r['id']} — {r['business_name']}\n"
-            f"{r['product']} x{r['bundle_size']}\n"
-            f"{r['contact_name']} | {r['phone']} | {r['email']}\n"
-            f"Locations: {r['locations']}\n"
-            f"{r['created_at'][:10]}\n\n"
-        )
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-
-def main():
-    if not BOT_TOKEN:
-        raise SystemExit("Set the BOT_TOKEN environment variable before running.")
-
-    init_db()
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    order_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(select_product, pattern="^product_")],
-        states={
-            ASK_BUNDLE: [CallbackQueryHandler(select_bundle, pattern="^bundle_")],
-            ASK_BUSINESS_NAME: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_business_name)],
-            ASK_CONTACT_NAME: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_contact_name)],
-            ASK_PHONE: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_phone)],
-            ASK_EMAIL: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_email)],
-            ASK_LOCATIONS: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_locations)],
-            ASK_ADDRESS: [MessageHandler(filters.TEXT & \~filters.COMMAND, ask_address)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("leads", leads_command))
-    app.add_handler(order_conv)
-    app.add_handler(CallbackQueryHandler(button_router))
-    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
-    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, text_router))
-
-    logger.info("TapForge bot starting...")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+            ud["phone
