@@ -1,4 +1,4 @@
- """
+"""
 TapForge NFC Cards Telegram Shop Bot
 ------------------------------------
 Menu-driven storefront: Browse Products (with descriptions),
