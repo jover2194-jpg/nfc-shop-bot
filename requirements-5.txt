@@ -1,0 +1,5 @@
+python-telegram-bot[job-queue]==21.4
+requests==2.32.3
+qrcode[pil]==7.4.2
+Pillow==10.4.0
+bip-utils==2.9.3
