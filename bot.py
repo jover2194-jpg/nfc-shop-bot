@@ -547,7 +547,91 @@ def crypto_amount_to_satoshis(amount_str: str) -> int:
     """Convert a decimal crypto amount string to integer satoshis."""
     return int((Decimal(amount_str) * Decimal("100000000")).to_integral_value(rounding=ROUND_UP))
 
+elif data == "reviews":
+    mock_reviews = (
+        f"⭐️⭐️⭐️⭐️⭐️ {AVG_REVIEW} average ({REVIEW_COUNT} reviews)\n\n"
+        "🗣️ *Sarah M. — Google Card*\n"
+        "\"Went from 12 to 40+ Google reviews in 3 weeks. Customers just tap "
+        "and leave before they walk out. Wish I'd got this sooner.\"\n\n"
+        "🗣️ *James R. — WhatsApp Growth Card*\n"
+        "\"Our WhatsApp broadcast list tripled in a month. Zero effort from "
+        "staff — the card does all the work.\"\n\n"
+        "🗣️ *Aisha K. — Trustpilot Card*\n"
+        "\"Looks premium on the counter and customers actually use it. "
+        "Trustpilot score went from 4.3 to 4.8.\"\n\n"
+        "New reviews are added as real orders come in."
+    )
+    await safe_edit(
+        query,
+        mock_reviews,
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(),
+    )
 
+elif data == "news":
+    await safe_edit(
+        query,
+        "📣 No announcements yet — check back soon!",
+        reply_markup=main_menu_keyboard(),
+    )
+
+elif data == "help":
+    await safe_edit(
+        query,
+        "*Help*\n\n"
+        "• NFC tap works on Android (Chrome) and most modern iPhones.\n"
+        "• Every card also comes with a QR code as a backup.\n"
+        "• Shipping usually takes 3–5 working days after payment.\n"
+        "• Need a human? Use Support Tickets.",
+        parse_mode="Markdown",
+        reply_markup=main_menu_keyboard(),
+    )
+
+elif data == "back_main":
+    await safe_edit(
+        query, "Main Menu:", reply_markup=main_menu_keyboard()
+    )
+
+elif data.startswith("checkpay_"):
+    order_id = data.replace("checkpay_", "")
+    conn = db()
+    order = conn.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
+    conn.close()
+    
+    if not order or not order["pay_address"]:
+        await query.answer("Order not found.", show_alert=True)
+        return
+        
+    if order["status"] == "Paid":
+        await query.answer("✅ Payment already confirmed. Thank you!", show_alert=True)
+        return
+        
+    # Send a "thinking" popup so they know it's working
+    await query.answer("🔍 Checking blockchain now...", show_alert=False)
+    
+    currency = (order["pay_currency"] or "").lower()
+    # FORCE an instant live lookup by calling BlockCypher directly
+    received = blockcypher_address_received(currency, order["pay_address"])
+    
+    if received is None:
+        await query.answer("❌ Couldn't reach blockchain lookup. Try again in a moment.", show_alert=True)
+        return
+        
+    needed = crypto_amount_to_satoshis(order["pay_amount"] or "0")
+    # Allow a tiny under-pay tolerance (1% of needed or 1000 sats, whichever larger)
+    tolerance = max(needed // 100, 1000)
+    
+    if received >= needed - tolerance:
+        await mark_order_paid(context.bot, int(order_id))
+        await query.answer("✅ Payment confirmed! Thank you.", show_alert=True)
+    else:
+        # Force it to show the exact numbers so you KNOW it's checking
+        await query.answer(
+            f"⏳ Still waiting — received {received / 1e8:.8f} {currency.upper()}, need {order['pay_amount']} {currency.upper()}. I'll notify you when it lands.",
+            show_alert=True,
+        )
+
+elif data.startswith("marksent_"):
 def main_menu_keyboard():
     return InlineKeyboardMarkup(
         [
